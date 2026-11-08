@@ -1,0 +1,20 @@
+[project]
+name = "remi-agent"
+version = "0.1.0"
+description = "Python voice-agent service for the Remi SDxSDSU Hackathon project"
+requires-python = ">=3.11"
+dependencies = [
+    "daytona==0.231.0",
+    "elevenlabs>=2.0",
+    "fastapi[standard]>=0.115",
+    "httpx>=0.28",
+    "pydantic-settings>=2.7",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+]
+
+[tool.ruff]
+line-length = 100
