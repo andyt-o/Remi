@@ -1,47 +1,44 @@
 # Remi
 
-Remi is a restaurant voice-agent backend project for the **SDxSDSU Hackathon**. The goal is to let a guest speak naturally with a restaurant, have an agent understand the request, and safely carry out supported actions through existing restaurant point-of-sale (POS) systems such as Oracle POS.
+Remi is a restaurant voice-agent backend project for the **SDxSDSU Hackathon**. The goal is to let a guest speak naturally with a restaurant, have an agent understand the request, and safely carry out supported actions through restaurant point-of-sale (POS) systems. The MVP uses a mock POS API for development and benchmarks because the team does not currently have access to an Oracle POS system.
 
-The system is expected to connect speech recognition (STT), an agent/harness, speech generation (TTS), restaurant APIs, and an isolated command-execution environment. ElevenLabs is the planned speech provider, and Daytona is the planned environment for creating VMs used by agents to execute commands. These are integration targets; credentials and working vendor integrations are not included yet.
+The MVP combines speech recognition (STT), agent orchestration, speech generation (TTS), and restaurant actions in one Python service. LangGraph provides the stateful agent workflow, and LangChain provides model and tool abstractions. ElevenLabs is the planned speech provider. Daytona is available for isolated command execution when a task needs a sandbox; ordinary POS actions should use the service's validated POS adapter directly. The MVP uses deterministic mock POS endpoints and does not require access to a live POS vendor.
 
 ## Architecture direction
 
-Start with a **TypeScript API service using Fastify** for latency-sensitive restaurant and POS endpoints. Fastify is a good fit for a small, async HTTP service and offers a lighter request path than Express in published framework benchmarks. Benchmark real Remi routes before treating framework benchmark numbers as a product result. Express remains a reasonable choice if the team values its familiarity or middleware ecosystem more than a small framework-level overhead difference.
-
-Use a **Python agent service (FastAPI)** for the voice-agent orchestration and provider integrations where Python libraries are useful. Keep speech and model calls asynchronous and stream audio/results where supported. Do not route every POS request through Python just because the agent service uses Python.
-
-A service boundary has a cost: an extra network or IPC hop, serialization, and another service to run. On one machine, loopback HTTP is usually simpler than custom IPC; in deployment, use a private network. The external STT, LLM, TTS, and POS calls are likely to dominate end-to-end conversational latency, but measure the actual path. If the Python service is only a thin pass-through and the team does not need Python-specific tooling, consolidate into TypeScript to remove the hop. For the hackathon foundation, the two-service split keeps the fast POS API path direct while leaving agent orchestration in Python.
+Use a **single Python FastAPI service** for voice-agent orchestration and restaurant/POS API endpoints. LangGraph defines the agent's stateful workflow and tool execution; LangChain provides model and tool integration abstractions. Keep per-turn context limited to the conversation and restaurant data needed, and use explicit state/checkpoints for multi-step tasks such as building and confirming an order. Async endpoints and clients plus streaming speech reduce avoidable waiting. There is no internal TypeScript/Python service hop. When a real POS provider is integrated in the future, its external network latency will still apply.
 
 ### Proposed request flow
 
 1. A caller sends audio or a transcript to the agent service.
-2. The agent service handles STT/agent/TTS orchestration and determines an allowed restaurant action.
-3. The agent calls the TypeScript API over a private HTTP interface for POS operations.
-4. The API validates the request and invokes the configured POS adapter.
-5. Daytona-created VMs, when used, should execute only narrowly scoped agent commands; they are not a substitute for POS authorization or server-side validation.
+2. The FastAPI service handles STT/agent/TTS orchestration; a LangGraph workflow maintains turn state and selects from explicitly defined tools.
+3. The service validates any proposed restaurant action and invokes the configured POS adapter directly.
+4. The mock POS API returns deterministic results for local development and repeatable benchmarks. A future real POS adapter can implement the same interface.
+5. Use Daytona sandboxes only for tasks that need isolated command execution. Sandbox results do not replace POS authorization or server-side validation.
 
 ## Repository layout
 
 ```text
 .
 ├── services/
-│   ├── api/       # TypeScript + Fastify restaurant/POS API
-│   └── agent/     # Python + FastAPI voice-agent service
-├── package.json  # Workspace scripts and API dependencies
-├── pyproject.toml # Python agent dependencies
+│   ├── agent/     # Python + FastAPI plus MCP tools for restaurant actions
+│   └── mocks/     # Mock restaurant integration APIs (Oracle POS, 7shifts, MarketMan)
+├── pyproject.toml # Python service dependencies
 ├── uv.lock       # Locked Python dependency versions
-└── .venv/        # Local Python virtual environment (not committed)
-    README.md
+├── .venv/        # Local Python virtual environment (not committed)
+├── AGENTS.md     # Contributor and coding-agent project guidance
+├── README.md     # Project overview and setup
+└── doc/
+    └── latency-estimates.md # Provider figures and Remi planning estimates
 ```
 
 ## Getting started
 
-Requirements: Node.js 20 or newer, npm, Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/).
+Requirements: Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
 Install dependencies:
 
 ```bash
-npm install
 uv sync
 ```
 
@@ -50,27 +47,40 @@ uv sync
 Run the starter services in separate terminals:
 
 ```bash
-npm run dev:api
+# Terminal 1: Run mock restaurant integrations server (port 8001)
+uv run uvicorn mocks.main:app --app-dir services/mocks --reload --port 8001
+
+# Terminal 2: Run voice agent service (port 8000)
 uv run uvicorn agent.main:app --app-dir services/agent --reload --port 8000
 ```
 
-The API listens on `http://localhost:3000`; the agent service listens on `http://localhost:8000`. The initial services expose health checks only. The Python environment includes the Daytona and ElevenLabs SDKs, but credentials and working provider adapters still need to be configured and implemented.
+The FastAPI agent service listens on `http://localhost:8000` and currently exposes a health check. The mock integrations service runs on `http://localhost:8001`, simulating Oracle POS, 7shifts, and MarketMan with realistic latency injection and profiles (`low_latency`, `typical_cloud`, `rush_hour_degraded`).
+
+### MCP tools
+
+The agent package includes a stdio MCP server for the mock services. After copying `.env.example` to `.env`, start it from the repository root with `PYTHONPATH=services/agent uv run --env-file .env python -m agent.mcp_server`. This loads `MOCK_POS_BASE_URL` from `.env`; without `--env-file`, set the variable in the shell yourself. The server provides menu, inventory, item availability, staff, shift, and confirmed order submission tools. MCP stdio is intended for an agent runtime that launches the server as a child process; if the agent runs in Daytona, the mock service URL must be reachable from that sandbox.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in credentials when the corresponding integrations are implemented. Never commit secrets. Keep Daytona execution credentials and POS credentials server-side; do not pass them to the model or expose them to callers.
+Copy `.env.example` to `.env` and adjust local service URLs as needed. Endpoint configuration stays in environment settings for this MVP; a restaurant-facing configuration UI can be added when we support multiple restaurant deployments and have authentication and credential storage. The mock POS API does not require vendor credentials. Add provider credentials only when the corresponding integrations are implemented; never commit secrets. Keep Daytona and provider credentials server-side and do not pass them to the model or expose them to callers.
 
 ## Development
 
 ```bash
-npm run typecheck
-uv run python -m compileall services/agent
+uv run python -m compileall services/agent services/mocks
 ```
+
+## Documentation
+
+- [AGENTS.md](AGENTS.md) is the contributor and coding-agent guide. It points to the relevant project documentation and records the architecture and implementation conventions.
+- [Latency estimates](doc/latency-estimates.md) contains published ElevenLabs measurements, clearly labeled Remi planning estimates, and the proposed benchmark measurements.
 
 ## Next steps
 
 - Define the restaurant action schema and authorization rules.
-- Add a POS adapter interface, then implement and validate an Oracle POS integration against its supported API and sandbox.
-- Add streaming STT/TTS and agent orchestration with ElevenLabs.
+- Connect the MCP tools to a LangGraph workflow with conversation state, scoped permissions, and order confirmation gates.
+- Add repeatable benchmarks against the mock POS API; replace or supplement it with a real POS adapter if access becomes available.
+- Implement a LangGraph workflow with conversation state, narrow POS tools, and order confirmation gates.
+- Add streaming STT/TTS with ElevenLabs and choose an LLM provider integration.
 - Add a constrained Daytona execution workflow, audit logging, timeouts, and cancellation.
 - Measure end-to-end latency and failure behavior using representative calls and POS operations.

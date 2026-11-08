@@ -1,3 +1,5 @@
+"""FastAPI entry point for the Remi agent service."""
+
 from fastapi import FastAPI
 
 app = FastAPI(title="Remi Agent Service")

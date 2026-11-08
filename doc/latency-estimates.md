@@ -6,6 +6,8 @@
 
 This document separates published ElevenLabs component measurements from planning estimates for Remi. Published provider measurements are not guarantees of end-to-end latency: network, user turn detection, application processing, POS calls, and audio playback all affect what a caller experiences.
 
+**MVP context:** Remi currently targets one Python FastAPI service with LangGraph/LangChain agent orchestration, ElevenLabs for planned speech integration, and deterministic mock POS endpoints. The ranges below are planning assumptions until measured in Remi. Mock POS measurements do not predict latency against a live POS vendor. Daytona is optional for isolated execution and is not assumed in the ordinary POS request path.
+
 ## ElevenLabs published measurements
 
 ElevenLabs' latency methodology describes these as medians (p50) measured on production traffic. TTS figures use WebSocket streaming with warm voices and measure server-side time from request receipt to first audio returned.
@@ -46,7 +48,7 @@ A useful initial product target is **under 1 second p50 and under 1.5 seconds p9
 
 ## POS action path
 
-The TypeScript API is intended to call restaurant and POS services directly, avoiding an extra application-service hop. It cannot remove the latency of the POS provider's network/API call.
+The single Python FastAPI service invokes the POS adapter directly, avoiding an extra internal application-service hop. In the MVP that adapter should use the deterministic mock POS API. This measures Remi's local action path, not vendor network/API latency.
 
 For a turn that needs a POS lookup or write:
 
@@ -55,7 +57,17 @@ For a turn that needs a POS lookup or write:
 - If the agent waits for the POS result before speaking, use **~1.2–3 seconds** as an initial planning range from caller stop to first audio.
 - To reduce perceived silence, the agent can stream a brief acknowledgement while the POS request runs, then speak the result. The acknowledgement must not imply success before the POS confirms it.
 
-POS timings above are rough planning assumptions. The actual Oracle POS integration and environment must be benchmarked.
+## Mock integration benchmarks and simulation profiles
+
+Remi includes a configurable mock server (`services/mocks`) simulating Oracle POS, 7shifts (labor/scheduling), and MarketMan (inventory/recipes) with realistic jitter and synthetic latency profiles:
+
+- **`low_latency`** (15–45ms Oracle, 30–70ms 7shifts, 40–90ms MarketMan): Simulates an on-premise edge setup or high-performance LAN workstation.
+- **`typical_cloud`** (60–140ms Oracle, 90–180ms 7shifts, 100–220ms MarketMan): Standard cloud SaaS multi-vendor environment over broadband.
+- **`rush_hour_degraded`** (180–450ms Oracle, 250–600ms 7shifts, 300–800ms MarketMan + 2–5% error rate): Stress test for rush periods, congested Wi-Fi, or upstream vendor throttling.
+
+Restaurants or benchmark runners can also specify custom exact latency bounds via environment variables (`ORACLE_POS_MIN_LATENCY_MS`, `MARKETMAN_MIN_LATENCY_MS`, etc.).
+
+All simulated responses return `_debug_latency_ms` and `_simulated_vendor` headers/fields to enable granular turn telemetry during live voice demos.
 
 ## Likely latency drivers
 
@@ -65,7 +77,7 @@ POS timings above are rough planning assumptions. The actual Oracle POS integrat
 4. **Streaming and buffering:** batch transcription or waiting for a complete TTS file adds avoidable delay.
 5. **Geography and connection setup:** placing services near users/providers and reusing persistent connections can reduce round trips.
 
-Fastify's framework overhead is expected to be a small part of this pipeline compared with model inference and external provider calls; validate that assumption with route-level measurements.
+FastAPI's framework overhead is expected to be a small part of this pipeline compared with model inference and external provider calls; validate that assumption with route-level measurements.
 
 ## Measurement plan
 
@@ -83,9 +95,9 @@ Report p50 and p95 separately for ordinary responses and POS action turns. Also 
 
 ## Architecture choice
 
-**ElevenAgents** provides managed STT, LLM, TTS, and turn-taking orchestration, reducing the work needed to reach a conversational prototype. A custom pipeline gives Remi more control over each stage but makes Remi responsible for streaming, endpointing, retries, cancellation, and observability.
+**ElevenAgents** provides managed STT, LLM, TTS, and turn-taking orchestration, reducing the work needed to reach a conversational prototype. Remi's current planned architecture instead uses LangGraph/LangChain orchestration in the FastAPI service with ElevenLabs speech APIs. A custom pipeline gives Remi more control over each stage but makes Remi responsible for streaming, endpointing, retries, cancellation, and observability. The ElevenAgents figures above are a comparison reference and are not a direct prediction for this custom pipeline.
 
-For either choice, keep POS operations behind validated, narrowly scoped TypeScript endpoints. Benchmark the full flow before making framework-level latency decisions.
+Keep POS operations behind validated, narrowly scoped FastAPI endpoints and provider adapters in the same service. Benchmark the full flow before making framework-level latency decisions.
 
 ## Sources
 
