@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-labelledby="title">
+  <title id="title">Dessert category icon</title>
+  <rect width="320" height="220" rx="24" fill="#f4e5e5"/>
+  <circle cx="160" cy="105" r="64" fill="#fff9f5" stroke="#dcc4bc" stroke-width="5"/>
+  <path d="M116 133h88l-8 12h-72Z" fill="#d9a0a0" stroke="#a9686a" stroke-width="3"/>
+  <path d="m128 127 34-52 35 52Z" fill="#e8c379" stroke="#aa8248" stroke-width="4" stroke-linejoin="round"/>
+  <path d="m136 115 13-20 12 19 12-17 15 23" fill="none" stroke="#fff4df" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="161" cy="77" r="6" fill="#bd665d"/>
+  <text x="160" y="198" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#855b59">DESSERT</text>
+</svg>

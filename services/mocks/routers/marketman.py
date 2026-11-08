@@ -1,6 +1,7 @@
 """Mock MarketMan API endpoints for restaurant inventory & ingredient availability."""
 
 from typing import Any
+from datetime import date, timedelta
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from mocks.simulator import simulate_latency
@@ -16,6 +17,21 @@ INVENTORY = {
     "draft_ipa_keg": {"name": "Local IPA Keg", "on_hand": 18, "unit": "pints", "is_86d": False},
 }
 
+# Deterministic receiving history for the isolated-delivery-analysis demo.
+# These records are illustrative mock data, not live MarketMan purchase history.
+_TODAY = date.today()
+_ITEM_KEYS = list(INVENTORY)
+RECEIVING_HISTORY = [
+    {
+        "delivery_id": f"RCV-{i:04d}",
+        "received_on": (_TODAY - timedelta(days=7 * ((i * 5) % 52 + 1))).isoformat(),
+        "item_key": _ITEM_KEYS[i % len(_ITEM_KEYS)],
+        "quantity": 12 + ((i * 17) % 39),
+        "unit_cost": round(3.25 + ((i * 11) % 180) / 100, 2),
+    }
+    for i in range(1, 53)
+]
+
 
 class DepleteRequest(BaseModel):
     item_key: str
@@ -26,6 +42,20 @@ class DepleteRequest(BaseModel):
 @simulate_latency("marketman")
 async def get_inventory() -> dict[str, Any]:
     return {"status": "success", "inventory": INVENTORY}
+
+
+@router.get("/v1/receiving/ytd")
+@simulate_latency("marketman")
+async def get_ytd_receiving() -> dict[str, Any]:
+    """Return deterministic year-to-date receiving records for the demo report."""
+    year_start = date(_TODAY.year, 1, 1)
+    records = [record for record in RECEIVING_HISTORY if record["received_on"] >= year_start.isoformat()]
+    return {
+        "status": "success",
+        "year": _TODAY.year,
+        "source": "illustrative_mock_history",
+        "records": records,
+    }
 
 
 @router.get("/v1/inventory/check-availability/{item_key}")

@@ -10,11 +10,11 @@ router = APIRouter(prefix="/oracle-pos", tags=["Oracle POS"])
 
 # In-memory mock database of POS checks and menu items
 MOCK_MENU = [
-    {"item_id": "101", "name": "Classic Cheeseburger", "price": 14.50, "category": "Entrees"},
-    {"item_id": "102", "name": "Truffle Fries", "price": 8.00, "category": "Sides"},
-    {"item_id": "103", "name": "Crispy Chicken Sandwich", "price": 13.75, "category": "Entrees"},
-    {"item_id": "104", "name": "Caesar Salad", "price": 11.00, "category": "Salads"},
-    {"item_id": "201", "name": "Draft IPA", "price": 7.50, "category": "Beverages"},
+    {"item_id": "101", "name": "Classic Cheeseburger", "price": 14.50, "category": "Entrees", "icon_url": "/menu/entree.svg"},
+    {"item_id": "102", "name": "Truffle Fries", "price": 8.00, "category": "Sides", "icon_url": "/menu/side.svg"},
+    {"item_id": "103", "name": "Crispy Chicken Sandwich", "price": 13.75, "category": "Entrees", "icon_url": "/menu/entree.svg"},
+    {"item_id": "104", "name": "Caesar Salad", "price": 11.00, "category": "Salads", "icon_url": "/menu/salad.svg"},
+    {"item_id": "201", "name": "Draft IPA", "price": 7.50, "category": "Beverages", "icon_url": "/menu/drink.svg"},
 ]
 
 OPEN_CHECKS: dict[str, dict[str, Any]] = {}
@@ -41,6 +41,27 @@ async def get_menu() -> dict[str, Any]:
 @router.post("/checks")
 @simulate_latency("oracle_pos")
 async def create_check(payload: CreateCheckRequest) -> dict[str, Any]:
+    # Read-before-write validation: check item availability in live MarketMan inventory
+    from mocks.routers.marketman import INVENTORY
+
+    # Mapping of menu item to inventory ingredient key
+    item_to_ingredient = {
+        "101": "beef_patty",
+        "102": "truffle_oil",
+        "103": "chicken_breast",
+    }
+
+    for req_item in payload.items:
+        ing_key = item_to_ingredient.get(req_item.item_id)
+        if ing_key and ing_key in INVENTORY:
+            stock = INVENTORY[ing_key]
+            if stock.get("is_86d") or stock.get("on_hand", 0) < req_item.quantity:
+                return {
+                    "status": "item_86d",
+                    "message": f"Cannot submit order: {stock['name']} is 86'd (out of stock).",
+                    "item_id": req_item.item_id,
+                }
+
     check_id = f"CHK-{uuid.uuid4().hex[:6].upper()}"
     total = 0.0
     detailed_items = []

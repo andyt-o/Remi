@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-labelledby="title">
+  <title id="title">Side dish category icon</title>
+  <rect width="320" height="220" rx="24" fill="#f1ecd9"/>
+  <circle cx="160" cy="105" r="64" fill="#fffaf2" stroke="#d8cbb0" stroke-width="5"/>
+  <path d="M113 103h94l-9 34c-3 12-15 18-38 18s-35-6-38-18Z" fill="#d77d4e" stroke="#a95b39" stroke-width="4"/>
+  <path d="M120 103c8-21 22-32 40-32s32 11 40 32Z" fill="#e6b94c" stroke="#b58335" stroke-width="4"/>
+  <path d="M130 100c8-11 17-16 30-16s22 5 30 16" fill="none" stroke="#f6dda0" stroke-width="4" stroke-linecap="round"/>
+  <text x="160" y="198" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#79563f">SIDE</text>
+</svg>

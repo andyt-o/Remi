@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-labelledby="title">
+  <title id="title">Salad category icon</title>
+  <rect width="320" height="220" rx="24" fill="#e9efdf"/>
+  <circle cx="160" cy="105" r="64" fill="#fffdf3" stroke="#cbd5b8" stroke-width="5"/>
+  <path d="M109 105h102l-10 33c-4 13-17 20-41 20s-37-7-41-20Z" fill="#f3efe1" stroke="#9da982" stroke-width="4"/>
+  <path d="M119 105c-13-20 8-34 23-19 2-23 27-26 35-7 14-17 35-4 27 15 15 8 7 22-5 23h-68c-7 0-11-5-12-12Z" fill="#79a55a" stroke="#527d43" stroke-width="3"/>
+  <circle cx="142" cy="97" r="6" fill="#d97850"/><circle cx="174" cy="90" r="5" fill="#e5c86c"/><circle cx="185" cy="108" r="5" fill="#d97850"/>
+  <text x="160" y="198" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#657358">SALAD</text>
+</svg>

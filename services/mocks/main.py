@@ -1,8 +1,12 @@
 """Main application for Remi Mock Restaurant Integrations."""
 
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from mocks.config import ACTIVE_PRESET, PRESET_PROFILES
 from mocks.routers.marketman import router as marketman_router
+from mocks.routers.notifications import router as notifications_router
 from mocks.routers.oracle_pos import router as oracle_router
 from mocks.routers.seven_shifts import router as seven_shifts_router
 
@@ -15,6 +19,12 @@ app = FastAPI(
 app.include_router(oracle_router)
 app.include_router(seven_shifts_router)
 app.include_router(marketman_router)
+app.include_router(notifications_router)
+app.mount(
+    "/menu",
+    StaticFiles(directory=Path(__file__).resolve().parents[2] / "public" / "menu"),
+    name="menu-images",
+)
 
 
 @app.get("/health")

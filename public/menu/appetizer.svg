@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-labelledby="title">
+  <title id="title">Appetizer category icon</title>
+  <rect width="320" height="220" rx="24" fill="#f5e9df"/>
+  <circle cx="160" cy="105" r="64" fill="#fffaf2" stroke="#d8c4b0" stroke-width="5"/>
+  <circle cx="160" cy="105" r="46" fill="#f4eadc"/>
+  <path d="M119 121 139 82l18 39Z" fill="#d9a34d" stroke="#ac7834" stroke-width="3"/>
+  <path d="m151 121 17-48 22 48Z" fill="#d77750" stroke="#a44f36" stroke-width="3"/>
+  <circle cx="132" cy="112" r="6" fill="#8ba65c"/><circle cx="180" cy="111" r="6" fill="#8ba65c"/>
+  <circle cx="146" cy="103" r="4" fill="#f4d57c"/><circle cx="172" cy="96" r="4" fill="#f4d57c"/>
+  <text x="160" y="198" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#79563f">APPETIZER</text>
+</svg>

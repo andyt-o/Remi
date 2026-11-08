@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-labelledby="title">
+  <title id="title">Entree category icon</title>
+  <rect width="320" height="220" rx="24" fill="#f4e8dc"/>
+  <circle cx="160" cy="105" r="64" fill="#fffaf2" stroke="#d8c4b0" stroke-width="5"/>
+  <circle cx="160" cy="105" r="46" fill="#f2e6d8"/>
+  <path d="M124 112c4-25 17-37 36-37s32 12 36 37Z" fill="#ca7a46" stroke="#965b37" stroke-width="4"/>
+  <path d="M125 114h70l-7 8-10-3-9 5-9-4-10 4-9-4-10 3Z" fill="#72974f"/>
+  <path d="M128 124h64c-4 12-16 18-32 18s-28-6-32-18Z" fill="#d49a5a" stroke="#965b37" stroke-width="3"/>
+  <text x="160" y="198" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#79563f">ENTREE</text>
+</svg>

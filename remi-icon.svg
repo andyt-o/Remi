@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1280 1280" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Remi restaurant voice assistant</title>
+  <desc id="desc">A smiling terracotta speech bubble wearing an ivory chef hat, on a transparent background.</desc>
+  <defs>
+    <linearGradient id="hat" x1="420" y1="160" x2="800" y2="630" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FAECD7"/>
+      <stop offset="1" stop-color="#F5E1C5"/>
+    </linearGradient>
+    <linearGradient id="body" x1="420" y1="590" x2="800" y2="1130" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#CF592F"/>
+      <stop offset="1" stop-color="#D96337"/>
+    </linearGradient>
+  </defs>
+  <g id="chef-hat" fill="url(#hat)" stroke="#4D2416" stroke-width="29" stroke-linejoin="round">
+    <path id="hat-crown" d="M356 509C296 487 238 451 235 384C230 312 294 255 363 254C402 252 443 266 466 289C460 210 534 121 618 122C701 119 769 178 766 246C833 196 909 197 958 244C1005 290 1008 360 981 408C957 451 906 477 860 497C707 447 513 447 356 509Z"/>
+    <path id="hat-band" d="M358 509C513 445 707 445 860 497L869 614C713 559 506 559 347 623Z"/>
+  </g>
+  <path id="speech-bubble" fill="url(#body)" d="M613 578C805 571 939 663 984 781C1021 882 958 993 849 1053C751 1107 611 1118 496 1099C454 1126 409 1149 351 1168C329 1175 312 1169 319 1148C338 1105 352 1071 352 1047C271 1001 220 943 221 859C218 759 273 665 365 619C436 587 527 580 613 578Z"/>
+  <g id="face" fill="#4D2416">
+    <ellipse id="left-eye" cx="490" cy="767" rx="36" ry="49"/>
+    <ellipse id="right-eye" cx="754" cy="767" rx="36" ry="49"/>
+    <path id="smile" d="M538 869C575 915 653 916 701 867" stroke="#4D2416" stroke-width="33" stroke-linecap="round" fill="none"/>
+  </g>
+</svg>

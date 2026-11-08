@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-labelledby="title">
+  <title id="title">Drink category icon</title>
+  <rect width="320" height="220" rx="24" fill="#e7edf0"/>
+  <circle cx="160" cy="105" r="64" fill="#f8fbfa" stroke="#c4d2d6" stroke-width="5"/>
+  <path d="M127 77h66l-7 69c-1 9-8 14-26 14s-25-5-26-14Z" fill="#e3b24e" stroke="#9b7537" stroke-width="4"/>
+  <path d="M130 93h60l-5 51c-1 6-7 9-25 9s-24-3-25-9Z" fill="#f0c96d"/>
+  <path d="M193 87c27-9 31 35 1 35" fill="none" stroke="#9b7537" stroke-width="7"/>
+  <path d="m148 68 16-17" stroke="#7e9ba1" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="151" cy="112" r="3" fill="#fff4cd"/><circle cx="173" cy="131" r="3" fill="#fff4cd"/>
+  <text x="160" y="198" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#596d72">DRINK</text>
+</svg>
