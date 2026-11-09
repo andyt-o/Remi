@@ -1,10 +1,12 @@
 """FastAPI entry point for the Remi agent service with concurrent session management."""
 
+import asyncio
+from collections import defaultdict
 import os
 import time
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 import httpx
 from pydantic import BaseModel, Field
 
@@ -13,6 +15,7 @@ from agent.daytona_tasks import get_task, start_delivery_report_task
 from agent.graph import session_graph
 
 app = FastAPI(title="Remi Agent Service", version="0.1.0")
+_session_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 class GreetingRequest(BaseModel):
@@ -45,6 +48,33 @@ class TurnResponse(BaseModel):
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "remi-agent"}
+
+
+@app.get("/restaurant/menu")
+async def restaurant_menu(account_id: int = 105) -> dict[str, Any]:
+    """Read the menu through the selected demo account."""
+    from agent.mcp_server import account_scope, get_menu
+
+    try:
+        with account_scope(account_id):
+            return await get_menu()
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="The selected demo account cannot access the menu.") from None
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(status_code=503, detail="The mock restaurant service is unavailable.") from None
+
+
+@app.get("/agent/capabilities")
+async def agent_capabilities(account_id: int) -> dict[str, Any]:
+    """Report staff assistant tools for the selected active demo account."""
+    from agent.mcp_server import account_scope, assistant_capabilities
+    try:
+        with account_scope(account_id):
+            return await assistant_capabilities()
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="The selected demo account is unavailable or disabled.") from None
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(status_code=503, detail="Could not verify the selected demo account.") from None
 
 
 @app.get("/health/dependencies")
@@ -83,14 +113,20 @@ async def dependency_health() -> dict[str, object]:
 
 class DaytonaTaskRequest(BaseModel):
     kind: str = Field(default="next_delivery_report", pattern="^next_delivery_report$")
-    role: str = Field(min_length=1, max_length=80)
+    account_id: int = Field(gt=0)
 
 
 @app.post("/tasks/daytona", status_code=202)
 async def create_daytona_task(payload: DaytonaTaskRequest) -> dict[str, str]:
     """Queue the manager-only MarketMan YTD next-delivery report."""
-    if payload.role.strip().lower() != "manager":
-        raise HTTPException(status_code=403, detail="Only a manager can start this inventory planning task.")
+    from agent.mcp_server import _require_manager, account_scope
+    try:
+        with account_scope(payload.account_id):
+            await _require_manager()
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="The selected profile must be an active manager.") from None
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(status_code=503, detail="Could not verify the selected demo account.") from None
     if not os.getenv("DAYTONA_API_KEY"):
         raise HTTPException(status_code=503, detail="Daytona is not configured on the agent service.")
     mock_base_url = os.getenv("MOCK_POS_BASE_URL", "http://localhost:8001").rstrip("/")
@@ -119,11 +155,11 @@ async def synthesize_session_greeting(payload: GreetingRequest) -> Response:
         from elevenlabs.client import AsyncElevenLabs
 
         client = AsyncElevenLabs(api_key=api_key)
-        audio_stream = await client.text_to_speech.convert(
+        audio_stream = client.text_to_speech.convert(
             voice_id=voice_id,
             output_format="mp3_22050_32",
             text=greeting,
-            model_id="eleven_flash_v2_5",
+            model_id=os.getenv("ELEVENLABS_TTS_MODEL_ID", "eleven_flash_v2_5"),
         )
         audio = b"".join([chunk async for chunk in audio_stream])
     except Exception:
@@ -132,11 +168,35 @@ async def synthesize_session_greeting(payload: GreetingRequest) -> Response:
     return Response(content=audio, media_type="audio/mpeg")
 
 
+@app.post("/voice/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)) -> dict[str, str]:
+    """Transcribe a captured utterance using ElevenLabs Scribe."""
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=503, detail="ElevenLabs is not configured on the agent service.")
+    audio_bytes = await audio.read(15 * 1024 * 1024 + 1)
+    if not audio_bytes or len(audio_bytes) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio must be between 1 byte and 15 MB.")
+    try:
+        from elevenlabs.client import AsyncElevenLabs
+        client = AsyncElevenLabs(api_key=api_key)
+        result = await client.speech_to_text.convert(
+            file=audio_bytes,
+            model_id=os.getenv("ELEVENLABS_STT_MODEL_ID", "scribe_v1"),
+            tag_audio_events=False,
+            language_code="eng",
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="ElevenLabs could not transcribe the recording.") from None
+    return {"transcript": str(getattr(result, "text", "")).strip()}
+
+
 @app.post("/voice/turn")
 async def process_voice_turn(
-    session_id: str,
-    role: str,
-    user: str,
+    session_id: str = Form(..., min_length=1, max_length=120),
+    role: str = Form(..., min_length=1, max_length=80),
+    user: str = Form(..., min_length=1, max_length=80),
+    account_id: int = Form(default=105, gt=0),
     audio: UploadFile = File(...),
 ) -> dict[str, Any]:
     """Transcribe one captured staff utterance and return an ElevenLabs spoken reply."""
@@ -170,11 +230,11 @@ async def process_voice_turn(
     turn = await process_agent_turn(TurnRequest(
         session_id=session_id,
         transcript=transcript,
-        account_id=106 if role.strip().lower() == "manager" else 105,
+        account_id=account_id,
         role=role.strip().lower(),
     ))
     try:
-        speech = await client.text_to_speech.convert(
+        speech = client.text_to_speech.convert(
             voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
             output_format="mp3_22050_32",
             text=turn.reply,
@@ -200,6 +260,7 @@ class VoiceReplyRequest(BaseModel):
     role: str = Field(min_length=1, max_length=80)
     user: str = Field(min_length=1, max_length=80)
     transcript: str = Field(min_length=1, max_length=4000)
+    account_id: int = Field(default=105, gt=0)
 
 
 class SpeechRequest(BaseModel):
@@ -216,7 +277,7 @@ async def synthesize_text(payload: SpeechRequest) -> Response:
         from elevenlabs.client import AsyncElevenLabs
 
         client = AsyncElevenLabs(api_key=api_key)
-        stream = await client.text_to_speech.convert(
+        stream = client.text_to_speech.convert(
             voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
             output_format="mp3_22050_32",
             text=payload.text,
@@ -231,19 +292,21 @@ async def synthesize_text(payload: SpeechRequest) -> Response:
 async def process_transcribed_voice_turn(payload: VoiceReplyRequest) -> dict[str, Any]:
     """Run a recognized staff utterance through Remi and return ElevenLabs TTS."""
     api_key = os.getenv("ELEVENLABS_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=503, detail="ElevenLabs is not configured on the agent service.")
     turn = await process_agent_turn(TurnRequest(
         session_id=payload.session_id,
         transcript=payload.transcript.strip(),
-        account_id=106 if payload.role.strip().lower() == "manager" else 105,
+        account_id=payload.account_id,
         role=payload.role.strip().lower(),
     ))
+    audio_out = b""
+    audio_error = None
     try:
+        if not api_key:
+            raise ValueError("ElevenLabs is not configured.")
         from elevenlabs.client import AsyncElevenLabs
 
         client = AsyncElevenLabs(api_key=api_key)
-        speech = await client.text_to_speech.convert(
+        speech = client.text_to_speech.convert(
             voice_id=os.getenv("ELEVENLABS_VOICE_ID", "pNInz6obpgDQGcFmaJgB"),
             output_format="mp3_22050_32",
             text=turn.reply,
@@ -251,7 +314,7 @@ async def process_transcribed_voice_turn(payload: VoiceReplyRequest) -> dict[str
         )
         audio_out = b"".join([chunk async for chunk in speech])
     except Exception:
-        raise HTTPException(status_code=502, detail="The agent replied, but ElevenLabs could not synthesize speech.") from None
+        audio_error = "The agent replied, but ElevenLabs speech is unavailable."
     import base64
     return {
         "session_id": payload.session_id,
@@ -259,6 +322,7 @@ async def process_transcribed_voice_turn(payload: VoiceReplyRequest) -> dict[str
         "reply": turn.reply,
         "audio_base64": base64.b64encode(audio_out).decode("ascii"),
         "audio_content_type": "audio/mpeg",
+        "audio_error": audio_error,
         "latency_ms": turn.latency_ms,
     }
 
@@ -269,12 +333,14 @@ async def process_agent_turn(payload: TurnRequest) -> TurnResponse:
     start_time = time.perf_counter()
 
     # 1. Fetch concise shared store context from in-memory cache (<1ms)
-    store_context = await store_cache.build_turn_context()
+    # Read tools fetch current data under the selected demo account. Do not
+    # inject a shared roster or cached availability into every conversation.
+    store_context = ""
 
     # 2. Configure LangGraph session checkpoint
     config = {
         "configurable": {
-            "thread_id": payload.session_id,
+            "thread_id": f"{payload.account_id}:{payload.session_id}",
             "store_context": store_context,
             "account_id": payload.account_id,
         }
@@ -290,8 +356,17 @@ async def process_agent_turn(payload: TurnRequest) -> TurnResponse:
         "role": payload.role,
     }
 
+    from agent.mcp_server import _require_active_account, account_scope
     try:
-        final_state = await session_graph.ainvoke(input_state, config=config)
+        with account_scope(payload.account_id):
+            account = await _require_active_account()
+            input_state["role"] = str(account.get("role", "")).strip().lower()
+            async with _session_locks[config["configurable"]["thread_id"]]:
+                final_state = await session_graph.ainvoke(input_state, config=config)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="The selected demo account is unavailable or disabled.") from None
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Could not verify the selected demo account with the mock service.") from None
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Graph turn execution error: {exc}")
 

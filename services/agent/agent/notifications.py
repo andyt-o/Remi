@@ -1,11 +1,12 @@
 """Staff notification service supporting Email-to-SMS gateways, Resend API, and simulated deliveries."""
 
 import asyncio
-from email.message import EmailMessage
 import os
 import smtplib
 import time
+from email.message import EmailMessage
 from typing import Any
+
 import httpx
 
 # In-memory store for incoming staff replies
@@ -126,9 +127,37 @@ async def send_via_smtp(to_email: str, subject: str, message: str) -> dict[str, 
     return {"status": "sent", "channel": "smtp", "recipient": to_email}
 
 
+async def send_via_twilio(phone_number: str, message: str) -> dict[str, Any]:
+    """Submit an SMS to Twilio; acceptance is not delivery confirmation."""
+    import re
+    raw = phone_number.strip()
+    if re.fullmatch(r"\+?[0-9 ()-]+", raw) is None:
+        raise ValueError("Provide a valid phone number in E.164 format.")
+    digits = "".join(c for c in raw if c.isdigit())
+    if not raw.startswith("+"):
+        if len(digits) == 10:
+            digits = "1" + digits
+        elif len(digits) != 11 or not digits.startswith("1"):
+            raise ValueError("Use E.164 format with a country code for non-US numbers.")
+    if not 8 <= len(digits) <= 15 or digits.startswith("0"):
+        raise ValueError("Provide a valid phone number in E.164 format.")
+    account = os.environ["TWILIO_ACCOUNT_SID"]
+    token = os.environ["TWILIO_AUTH_TOKEN"]
+    sender = os.environ["TWILIO_FROM_NUMBER"]
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{account}/Messages.json",
+            auth=(account, token), data={"To": "+" + digits, "From": sender, "Body": message},
+        )
+        response.raise_for_status()
+        result = response.json()
+    return {"status": "accepted", "provider": "twilio", "provider_status": result.get("status"),
+            "message_id": result.get("sid"), "recipient": "+" + digits}
+
+
 async def send_staff_sms(
     phone_number: str,
-    carrier: str,
+    carrier: str | None,
     message: str,
     manager_name: str | None = None,
     restaurant_phone: str | None = None,
@@ -136,6 +165,11 @@ async def send_staff_sms(
     subject: str = "Remi Restaurant Alert",
 ) -> dict[str, Any]:
     """Dispatches staff SMS using Resend API, SMTP, or mock simulation if unconfigured."""
+    if all(os.getenv(key) for key in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER")):
+        mgr = manager_name or os.getenv("DEFAULT_MANAGER_SIGNATURE", "Taylor Morgan")
+        return await send_via_twilio(phone_number, f"{message.strip()}\n\n— {mgr}")
+    if not carrier:
+        raise ValueError("Configure Twilio to send without a carrier, or specify a supported carrier.")
     # Allow overriding destination with a fixed test recipient in .env
     # Useful for Resend free tier sandbox (which restricts delivery to verified account)
     test_target_override = os.getenv("RESEND_TEST_RECIPIENT_OVERRIDE")

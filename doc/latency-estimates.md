@@ -6,7 +6,7 @@
 
 This document separates published ElevenLabs component measurements from planning estimates for Remi. Published provider measurements are not guarantees of end-to-end latency: network, user turn detection, application processing, POS calls, and audio playback all affect what a caller experiences.
 
-**MVP context:** Remi currently targets one Python FastAPI service with LangGraph/LangChain agent orchestration, ElevenLabs for planned speech integration, and deterministic mock POS endpoints. The ranges below are planning assumptions until measured in Remi. Mock POS measurements do not predict latency against a live POS vendor. Daytona is optional for isolated execution and is not assumed in the ordinary POS request path.
+**MVP context:** Remi currently targets one Python FastAPI service with LangGraph/LangChain agent orchestration, ElevenLabs for planned speech integration, and mock POS endpoints with seeded data. The ranges below are planning assumptions until measured in Remi. Mock POS measurements do not predict latency against a live POS vendor. Daytona is optional for isolated execution and is not assumed in the ordinary POS request path.
 
 ## ElevenLabs published measurements
 
@@ -48,7 +48,7 @@ A useful initial product target is **under 1 second p50 and under 1.5 seconds p9
 
 ## POS action path
 
-The single Python FastAPI service invokes the POS adapter directly, avoiding an extra internal application-service hop. In the MVP that adapter should use the deterministic mock POS API. This measures Remi's local action path, not vendor network/API latency.
+The single Python FastAPI service invokes the POS adapter directly, avoiding an extra internal application-service hop. In the MVP that adapter should use the mock POS API. This measures Remi's local action path, not vendor network/API latency.
 
 For a turn that needs a POS lookup or write:
 
@@ -67,7 +67,7 @@ Remi includes a configurable mock server (`services/mocks`) simulating Oracle PO
 
 Restaurants or benchmark runners can also specify custom exact latency bounds via environment variables (`ORACLE_POS_MIN_LATENCY_MS`, `MARKETMAN_MIN_LATENCY_MS`, etc.).
 
-All simulated responses return `_debug_latency_ms` and `_simulated_vendor` headers/fields to enable granular turn telemetry during live voice demos.
+Successful decorated routes that return dictionaries include `_debug_latency_ms` and `_simulated_vendor` fields. These fields are not response headers and are not included on simulated failures or non-dictionary responses. Delays are randomized, and the degraded profile injects random failures; benchmark runs are therefore not fully deterministic.
 
 ## Likely latency drivers
 

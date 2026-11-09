@@ -11,6 +11,8 @@ URL reachable from that runtime.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import quote
 
@@ -20,6 +22,29 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("remi-restaurant-tools")
 
 MANAGER_ROLES = {"manager"}
+ASSISTANT_READ_TOOLS = ("get_my_account_status", "get_menu", "check_item_availability", "get_order_check")
+ASSISTANT_MANAGER_READ_TOOLS = ("get_staff_working_now", "get_today_shifts", "get_inventory",
+                                "get_staff_account_status", "check_staff_sms_replies",
+                                "get_daytona_task", "list_daytona_tasks")
+ASSISTANT_MANAGER_ACTION_TOOLS = ("send_staff_sms_alert",)
+STAFF_MCP_TOOLS = ASSISTANT_READ_TOOLS + (
+    "create_order_check",
+)
+MANAGER_MCP_TOOLS = STAFF_MCP_TOOLS + ASSISTANT_MANAGER_READ_TOOLS + (
+    "deplete_inventory", "update_shift_schedule",
+    "send_staff_sms_alert", "start_daytona_delivery_report",
+)
+_request_account: ContextVar[int | None] = ContextVar("remi_request_account", default=None)
+
+
+@contextmanager
+def account_scope(account_id: int):
+    """Scope direct tool calls to a demo account without changing stdio identity."""
+    token = _request_account.set(account_id)
+    try:
+        yield
+    finally:
+        _request_account.reset(token)
 
 
 def _base_url() -> str:
@@ -27,6 +52,9 @@ def _base_url() -> str:
 
 
 def _account_id() -> int:
+    current = _request_account.get()
+    if current is not None:
+        return current
     try:
         return int(os.getenv("REMI_MCP_ACCOUNT_ID", "105"))
     except ValueError as exc:
@@ -61,6 +89,19 @@ async def _require_manager() -> dict[str, Any]:
     if role not in MANAGER_ROLES:
         raise PermissionError("This MCP tool requires a manager account")
     return account
+
+
+async def assistant_capabilities() -> dict[str, Any]:
+    """Return read tools wired into the staff assistant for the current account."""
+    account = await _require_active_account()
+    tools = list(ASSISTANT_READ_TOOLS)
+    mcp_tools = STAFF_MCP_TOOLS
+    if str(account.get("role", "")).strip().lower() in MANAGER_ROLES:
+        tools.extend(ASSISTANT_MANAGER_READ_TOOLS)
+        tools.extend(ASSISTANT_MANAGER_ACTION_TOOLS)
+        mcp_tools = MANAGER_MCP_TOOLS
+    return {"account_id": account["user_id"], "role": account["role"],
+            "tools": tools, "other_mcp_tools": [name for name in mcp_tools if name not in tools]}
 
 
 @mcp.tool()
@@ -222,8 +263,8 @@ async def update_shift_schedule(
 @mcp.tool()
 async def send_staff_sms_alert(
     phone_number: str,
-    carrier: str,
     message: str,
+    carrier: str | None = None,
     manager_name: str | None = None,
     restaurant_phone: str | None = None,
     floor_phone: str | None = None,
@@ -263,6 +304,45 @@ async def check_staff_sms_replies(filter_query: str | None = None) -> dict[str, 
         "replies": replies,
     }
 
+
+
+@mcp.tool()
+async def start_daytona_delivery_report() -> dict[str, Any]:
+    """Start the bounded mock MarketMan delivery report in a Daytona sandbox.
+
+    Manager only. Returns immediately; use get_daytona_task to follow progress.
+    This creates no purchase order. Tasks are local to this MCP process.
+    """
+    await _require_manager()
+    if not os.getenv("DAYTONA_API_KEY"):
+        raise RuntimeError("Daytona is not configured on this MCP process.")
+    from agent.daytona_tasks import start_delivery_report_task
+
+    task_id = start_delivery_report_task(_base_url())
+    return {"task_id": task_id, "status": "queued"}
+
+
+@mcp.tool()
+async def get_daytona_task(task_id: str) -> dict[str, Any]:
+    """(Manager only) Read a task's progress, report, and sandbox lifecycle."""
+    await _require_manager()
+    from agent.daytona_tasks import get_task
+
+    task = get_task(task_id)
+    if task is None:
+        raise ValueError("Task not found in this MCP process")
+    return task
+
+
+@mcp.tool()
+async def list_daytona_tasks() -> dict[str, Any]:
+    """(Manager only) List background tasks and observed sandbox lifecycle states."""
+    await _require_manager()
+    from agent.daytona_tasks import list_tasks
+
+    tasks = list_tasks()
+    return {"tasks": [{key: value for key, value in task.items() if key != "report"}
+                      for task in tasks]}
 
 def main() -> None:
     """Start the MCP server over stdio."""

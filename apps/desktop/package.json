@@ -40,7 +40,10 @@
     ],
     "mac": {
       "category": "public.app-category.business",
-      "icon": "assets/icons/remi.icns"
+      "icon": "assets/icons/remi.icns",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Remi listens to staff voice requests during an active assistant session."
+      }
     },
     "win": {
       "target": [

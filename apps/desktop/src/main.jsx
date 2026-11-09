@@ -82,23 +82,19 @@ function readStaffAccess() {
   }
 }
 
-const mockMenu = [
-  { name: 'Classic Cheeseburger', category: 'Entrees', price: '$14.50', availability: 'Available', icon: 'entree.svg' },
-  { name: 'Truffle Fries', category: 'Sides', price: '$8.00', availability: 'Low stock', icon: 'side.svg' },
-  { name: 'Crispy Chicken Sandwich', category: 'Entrees', price: '$13.75', availability: '86’d', icon: 'entree.svg' },
-  { name: 'Caesar Salad', category: 'Salads', price: '$11.00', availability: 'Available', icon: 'salad.svg' },
-  { name: 'Draft IPA', category: 'Beverages', price: '$7.50', availability: 'Available', icon: 'drink.svg' },
-];
-
 function App() {
   const [service, setService] = useState('checking');
   const [health, setHealth] = useState({});
+  const [menu, setMenu] = useState([]);
+  const [menuStatus, setMenuStatus] = useState('Loading menu…');
+  const [capabilities, setCapabilities] = useState({ status: 'loading', tools: [] });
   const [running, setRunning] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [activeNav, setActiveNav] = useState('Overview');
   const [showAll, setShowAll] = useState(false);
   const [listening, setListening] = useState(false);
+  const [stopConfirmation, setStopConfirmation] = useState(false);
   const [smsSenderDomain, setSmsSenderDomain] = useState('juniperkitchen.com');
   const [smsFromAddress, setSmsFromAddress] = useState('alerts@juniperkitchen.com');
   const [smsProvider, setSmsProvider] = useState('Resend');
@@ -122,18 +118,56 @@ function App() {
   const [daytonaBusy, setDaytonaBusy] = useState(false);
   const [daytonaError, setDaytonaError] = useState('');
   const [voiceProcessing, setVoiceProcessing] = useState(false);
+  const [remiSpeaking, setRemiSpeaking] = useState(false);
   const [voiceSessionId, setVoiceSessionId] = useState(() => `staff-${crypto.randomUUID()}`);
-  const recorderRef = React.useRef(null);
-  const recordingStreamRef = React.useRef(null);
-  const chunkQueueRef = React.useRef([]);
-  const speechRecognitionRef = React.useRef(null);
+  const transcriptRef = React.useRef(null);
+  const captureRef = React.useRef(null);
+  const microphoneActiveRef = React.useRef(false);
+  const speakingRef = React.useRef(false);
+  const processingRef = React.useRef(false);
+  const playbackRef = React.useRef(null);
   const stopConfirmedRef = React.useRef(false);
   const [zoomFactor, setZoomFactor] = useState(1.1);
 
   useEffect(() => {
+    const transcript = transcriptRef.current;
+    if (transcript) transcript.scrollTop = transcript.scrollHeight;
+  }, [messages, scheduleProposal, activeNav, stage]);
+
+  useEffect(() => {
     setVoiceSupported(Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder));
-    return () => recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    return () => { microphoneActiveRef.current = false; captureRef.current?.cleanup(); };
   }, []);
+
+  useEffect(() => {
+    if (activeNav !== 'Menu & availability') return;
+    let active = true;
+    setMenuStatus('Loading menu…');
+    window.remiWindow?.getMenu?.(profile?.id).then((result) => {
+      if (!active) return;
+      setMenu(result?.ok ? result.items || [] : []);
+      setMenuStatus(result?.ok ? 'Connected to mock POS' : result?.error || 'Menu unavailable');
+    });
+    return () => { active = false; };
+  }, [activeNav, profile?.id]);
+
+  useEffect(() => {
+    if (activeNav !== 'Staff assistant' || !profile?.id) return;
+    let active = true;
+    setCapabilities({ status: 'loading', tools: [] });
+    const refresh = async () => {
+      try {
+        const result = await window.remiWindow?.getCapabilities?.(profile.id);
+        if (!active) return;
+        setCapabilities(result?.ok ? { status: 'ready', tools: result.tools || [], otherTools: result.other_mcp_tools || [] } : { status: 'error', tools: [], error: result?.error || 'Capabilities unavailable.' });
+      } catch {
+        if (active) setCapabilities({ status: 'error', tools: [], error: 'Capabilities unavailable.' });
+      }
+    };
+    void refresh();
+    const timer = setInterval(refresh, 15000);
+    return () => { active = false; clearInterval(timer); };
+  }, [activeNav, profile?.id]);
 
   useEffect(() => {
     window.remiWindow?.getZoomFactor?.().then((value) => {
@@ -175,100 +209,205 @@ function App() {
       ...(prompt ? [{ from: 'remi', text: 'I can help prepare that for staff review. What details should I consider?', time: '00:11' }] : []),
     ]);
     setAudioError('');
+    speakingRef.current = true;
     window.remiWindow?.synthesizeSessionGreeting?.(profile?.role || 'staff', profile?.name || 'there')
       .then((result) => {
         if (!result?.ok || !result.audio) return;
-        const audio = new Audio(`data:audio/mpeg;base64,${result.audio}`);
-        return audio.play();
+        return playElevenLabs(result.audio);
       })
-      .catch(() => setAudioError('Could not play the ElevenLabs session greeting. The greeting is available in the transcript.'));
+      .catch(() => setAudioError('Could not play the ElevenLabs session greeting. The greeting is available in the transcript.'))
+      .finally(() => { speakingRef.current = false; });
     if (stage === 'workspace') void startMicrophone();
   };
 
   const stopMicrophone = () => {
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop();
-    else recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-    recorderRef.current = null;
-    recordingStreamRef.current = null;
+    microphoneActiveRef.current = false;
+    captureRef.current?.cleanup();
+    captureRef.current = null;
     setListening(false);
   };
 
-  const startMicrophone = async () => {
-    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      setAudioError('Microphone recording is unavailable in this runtime.');
-      return;
-    }
+  const interruptPhrase = (text) => /\b(?:hey\s+)?remi\b.{0,32}\b(?:stop|wait|pause|hold on|hold up|quiet)\b/i.test(text)
+    || /\b(?:stop|wait|pause|hold on|hold up|quiet)\b.{0,32}\bremi\b/i.test(text);
+
+  const interruptRemi = (text) => {
+    const audio = playbackRef.current;
+    if (!audio || !speakingRef.current || !interruptPhrase(text)) return false;
+    audio.pause();
+    audio.currentTime = 0;
+    speakingRef.current = false;
+    setRemiSpeaking(false);
+    const time = new Date().toLocaleTimeString([], { minute: '2-digit', second: '2-digit' });
+    setMessages((items) => [...items, { from: 'staff', text, time }, { from: 'remi', text: 'I stopped speaking. I’m listening.', time }]);
+    return true;
+  };
+
+  const playElevenLabs = async (base64) => {
+    if (!base64) return;
+    speakingRef.current = true;
+    setRemiSpeaking(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordingStreamRef.current = stream;
-      chunkQueueRef.current = [];
-      const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((type) => window.MediaRecorder.isTypeSupported(type));
-      const recorder = new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      recorderRef.current = recorder;
-      recorder.ondataavailable = (event) => {
-        if (!event.data.size) return;
-        chunkQueueRef.current.push(event.data);
-        const size = chunkQueueRef.current.reduce((total, chunk) => total + chunk.size, 0);
-        if (size >= 350_000 && !voiceProcessing) void processRecording(chunkQueueRef.current.splice(0), recorder.mimeType);
-      };
-      recorder.onstop = () => {
-        const remaining = chunkQueueRef.current.splice(0);
-        if (remaining.length) void processRecording(remaining, recorder.mimeType);
-        stream.getTracks().forEach((track) => track.stop());
-      };
-      recorder.onerror = () => setAudioError('Microphone capture failed. Check microphone permission and try again.');
-      recorder.start(1000);
-      setListening(true);
-      setAudioError('');
-    } catch (error) {
-      setListening(false);
-      setAudioError(error?.name === 'NotAllowedError' ? 'Microphone permission was denied. Allow microphone access and try again.' : 'Could not access the microphone. Check that one is connected and enabled.');
+      const audio = new Audio(`data:audio/mpeg;base64,${base64}`);
+      playbackRef.current = audio;
+      await new Promise((resolve) => {
+        audio.onended = resolve;
+        audio.onerror = resolve;
+        audio.onpause = resolve;
+        audio.play().catch(resolve);
+      });
+    } finally {
+      playbackRef.current = null;
+      speakingRef.current = false;
+      setRemiSpeaking(false);
     }
   };
 
-  const processRecording = async (chunks, mimeType = 'audio/webm') => {
-    if (voiceProcessing || !chunks.length) return;
-    setVoiceProcessing(true);
-    try {
-      const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
-      if (blob.size < 1800) return;
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      let binary = '';
-      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      const result = await window.remiWindow?.processVoiceTurn?.({ sessionId: voiceSessionId, role: profile?.role || 'Server', user: profile?.name || 'Staff', audioBase64: btoa(binary), mimeType: blob.type });
-      if (!result?.ok) throw new Error(result?.error || 'ElevenLabs voice processing failed.');
-      const time = new Date().toLocaleTimeString([], { minute: '2-digit', second: '2-digit' });
-      const text = result.transcript.trim();
-      if (stopConfirmedRef.current && /\bconfirm stop\b/i.test(text)) {
-        setStopConfirmation(false);
-        stopConfirmedRef.current = false;
-        setMessages((items) => [...items, { from: 'staff', text, time }, { from: 'remi', text: 'Confirmed. I’m stopping microphone capture. Press the microphone button to resume.', time }]);
-        stopMicrophone();
-        return;
-      }
-      if (stopConfirmedRef.current && /\bcontinue recording\b/i.test(text)) {
-        setStopConfirmation(false);
-        stopConfirmedRef.current = false;
-        setMessages((items) => [...items, { from: 'staff', text, time }, { from: 'remi', text: 'Continuing to listen.', time }]);
-        return;
-      }
-      if (/\b(stop|turn off|disable)\b.{0,24}\b(microphone|mic|recording|listening)\b/i.test(text)) {
-        setStopConfirmation(true);
-        stopConfirmedRef.current = true;
-        setMessages((items) => [...items, { from: 'staff', text, time }, { from: 'remi', text: 'I heard a request to stop the microphone. Say “confirm stop” or press the microphone button to stop, or say “continue recording” to keep this session active.', time }]);
-        const prompt = await window.remiWindow?.synthesizeSessionGreeting?.('Please confirm', 'stop recording');
-        if (prompt?.ok) await new Audio(`data:audio/mpeg;base64,${prompt.audio}`).play();
-        return;
-      }
-      setStopConfirmation(false);
+  const processRecognizedText = async (text) => {
+    const transcript = text.trim();
+    if (!transcript) return;
+    if (speakingRef.current) {
+      interruptRemi(transcript);
+      return;
+    }
+    const time = new Date().toLocaleTimeString([], { minute: '2-digit', second: '2-digit' });
+    if (stopConfirmedRef.current && /\bconfirm stop\b/i.test(transcript)) {
       stopConfirmedRef.current = false;
-      setMessages((items) => [...items, { from: 'staff', text, time }, { from: 'remi', text: result.reply, time }]);
-      const speech = new Audio(`data:${result.audio_content_type || 'audio/mpeg'};base64,${result.audio_base64}`);
-      await speech.play();
+      setStopConfirmation(false);
+      setMessages((items) => [...items, { from: 'staff', text: transcript, time }, { from: 'remi', text: 'Confirmed. I’m stopping microphone capture. Press the microphone button to resume.', time }]);
+      const prompt = await window.remiWindow?.synthesizeText?.('Confirmed. I am stopping microphone capture. Press the microphone button to resume.');
+      if (prompt?.ok) await playElevenLabs(prompt.audio);
+      stopMicrophone();
+      return;
+    }
+    if (stopConfirmedRef.current && /\bcontinue recording\b/i.test(transcript)) {
+      stopConfirmedRef.current = false;
+      setStopConfirmation(false);
+      setMessages((items) => [...items, { from: 'staff', text: transcript, time }, { from: 'remi', text: 'Continuing to listen.', time }]);
+      return;
+    }
+    if (/\b(stop|turn off|disable)\b.{0,24}\b(microphone|mic|recording|listening)\b/i.test(transcript)) {
+      stopConfirmedRef.current = true;
+      setStopConfirmation(true);
+      const promptText = 'I heard a request to stop the microphone. Say confirm stop to stop, or continue recording to keep this session active.';
+      setMessages((items) => [...items, { from: 'staff', text: transcript, time }, { from: 'remi', text: promptText, time }]);
+      const prompt = await window.remiWindow?.synthesizeText?.(promptText);
+      if (prompt?.ok) await playElevenLabs(prompt.audio);
+      return;
+    }
+    if (stopConfirmedRef.current) {
+      setMessages((items) => [...items, { from: 'staff', text: transcript, time }, { from: 'remi', text: 'Please say “confirm stop” or “continue recording”.', time }]);
+      return;
+    }
+    if (/schedule/i.test(transcript) && /draft|next week|propos/i.test(transcript)) {
+      createScheduleDraft(transcript);
+      const speech = await window.remiWindow?.synthesizeText?.('I prepared a sample schedule for your review. A manager can approve the demo draft.');
+      if (speech?.ok) await playElevenLabs(speech.audio);
+      return;
+    }
+    if (processingRef.current) return;
+    processingRef.current = true;
+    setVoiceProcessing(true);
+    setMessages((items) => [...items, { from: 'staff', text: transcript, time }]);
+    try {
+      const result = await window.remiWindow?.processVoiceReply?.({ session_id: voiceSessionId, role: profile?.role || 'Server', user: profile?.name || 'Staff', account_id: profile?.id || 105, transcript });
+      if (!result?.ok) throw new Error(result?.error || 'ElevenLabs could not prepare a spoken reply.');
+      setMessages((items) => [...items, { from: 'remi', text: result.reply, time }]);
+      if (result.audio_error) setAudioError(result.audio_error);
+      await playElevenLabs(result.audio_base64);
     } catch (error) {
-      setAudioError(error?.message || 'Could not process the microphone recording.');
+      setAudioError(error?.message || 'Could not process the voice request.');
     } finally {
+      processingRef.current = false;
       setVoiceProcessing(false);
+    }
+  };
+
+  const startMicrophone = async () => {
+    if (microphoneActiveRef.current) return;
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setAudioError('Microphone recording is unavailable in this Electron runtime.');
+      setVoiceSupported(false);
+      return;
+    }
+    microphoneActiveRef.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      if (!microphoneActiveRef.current) { stream.getTracks().forEach((track) => track.stop()); return; }
+      const context = new AudioContext();
+      const source = context.createMediaStreamSource(stream);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      const samples = new Float32Array(analyser.fftSize);
+      let recorder = null;
+      let chunks = [];
+      let lastSpeech = 0;
+      let started = 0;
+      let beganDuringPlayback = false;
+      let busy = false;
+      let frame;
+      const cleanup = () => {
+        cancelAnimationFrame(frame);
+        if (recorder && recorder.state !== 'inactive') { recorder.onstop = null; recorder.stop(); }
+        stream.getTracks().forEach((track) => track.stop());
+        void context.close();
+      };
+      captureRef.current = { cleanup };
+      setListening(true);
+      setAudioError('');
+      const tick = () => {
+        if (!microphoneActiveRef.current) return;
+        analyser.getFloatTimeDomainData(samples);
+        const rms = Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
+        const now = performance.now();
+        if (!busy && (!processingRef.current || speakingRef.current)) {
+          if (rms > 0.018) {
+            lastSpeech = now;
+            if (!recorder) {
+              chunks = [];
+              beganDuringPlayback = speakingRef.current;
+              recorder = new MediaRecorder(stream);
+              recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+              const activeRecorder = recorder;
+              const playbackUtterance = beganDuringPlayback;
+              recorder.onstop = async () => {
+                const blob = new Blob(chunks, { type: activeRecorder.mimeType || 'audio/webm' });
+                recorder = null;
+                if (!microphoneActiveRef.current || !blob.size) { busy = false; return; }
+                try {
+                  const bytes = new Uint8Array(await blob.arrayBuffer());
+                  let binary = '';
+                  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+                  const result = await window.remiWindow.transcribeAudio({ audioBase64: btoa(binary), mimeType: blob.type });
+                  if (!result.ok) throw new Error(result.error);
+                  // Playback is part of turn processing; allow another utterance
+                  // to be recorded while that response is being spoken.
+                  busy = false;
+                  if (microphoneActiveRef.current && result.transcript) {
+                    if (playbackUtterance) interruptRemi(result.transcript);
+                    else void processRecognizedText(result.transcript);
+                  }
+                } catch (error) {
+                  busy = false;
+                  setAudioError(error?.message || 'Could not transcribe the recording.');
+                }
+              };
+              started = now;
+              recorder.start();
+            }
+          }
+          if (recorder && (now - lastSpeech > 1000 || now - started > 20000)) {
+            busy = true;
+            recorder.stop();
+          }
+        }
+        frame = requestAnimationFrame(tick);
+      };
+      frame = requestAnimationFrame(tick);
+    } catch {
+      microphoneActiveRef.current = false;
+      setListening(false);
+      setAudioError('Could not start the microphone. Check microphone permissions and try again.');
     }
   };
 
@@ -278,14 +417,14 @@ function App() {
     setRunning(true);
     setScheduleProposal(true);
     setScheduleApproved(false);
-    setMessages([
-      ...(!wasRunning ? [{ from: 'remi', text: `What should we do today ${profile?.role || 'staff'}, ${profile?.name || 'there'}?`, time: '00:02' }] : []),
+    setMessages((items) => [
+      ...(wasRunning ? items : [{ from: 'remi', text: `What should we do today ${profile?.role || 'staff'}, ${profile?.name || 'there'}?`, time: '00:02' }]),
       { from: 'staff', text: request, time: '00:08' },
       { from: 'remi', text: 'I’ve prepared a proposed front-of-house schedule for next week. Please review coverage and make any changes before you approve it.', time: '00:16' },
     ]);
   };
 
-  const handleStaffRequest = (text) => {
+  const handleStaffRequest = async (text) => {
     if (stopConfirmedRef.current && /\bconfirm stop\b/i.test(text)) {
       stopConfirmedRef.current = false;
       setStopConfirmation(false);
@@ -299,12 +438,27 @@ function App() {
       setMessages((items) => [...items, { from: 'staff', text, time: 'now' }, { from: 'remi', text: 'Continuing to listen.', time: 'now' }]);
       return;
     }
-    if (/schedule|shift|coverage/i.test(text)) {
+    if (/schedule/i.test(text) && /draft|next week|propos/i.test(text)) {
       createScheduleDraft(text);
       return;
     }
-    if (!running) startDemo(text);
-    else setMessages((items) => [...items, { from: 'staff', text, time: '00:14' }, { from: 'remi', text: 'I’ve captured that staff request. The connected automation workflow is still in demo mode.', time: '00:16' }]);
+    if (processingRef.current) return;
+    processingRef.current = true;
+    setVoiceProcessing(true);
+    setAudioError('');
+    setRunning(true);
+    const time = new Date().toLocaleTimeString([], { minute: '2-digit', second: '2-digit' });
+    setMessages((items) => [...items, { from: 'staff', text, time }]);
+    try {
+      const result = await window.remiWindow?.processAgentTurn?.({ session_id: voiceSessionId, transcript: text, account_id: profile?.id || 105, role: profile?.role?.toLowerCase() || 'server' });
+      if (!result?.ok) throw new Error(result?.error || 'Agent request failed.');
+      setMessages((items) => [...items, { from: 'remi', text: result.reply, time }]);
+    } catch (error) {
+      setAudioError(error?.message || 'Could not process the staff request.');
+    } finally {
+      processingRef.current = false;
+      setVoiceProcessing(false);
+    }
   };
 
   const approveSchedule = () => {
@@ -316,7 +470,7 @@ function App() {
     setDaytonaError('');
     setDaytonaBusy(true);
     try {
-      const started = await window.remiWindow?.startDaytonaReport?.(profile?.role || '');
+      const started = await window.remiWindow?.startDaytonaReport?.(profile?.id);
       if (!started?.ok) throw new Error(started?.error || 'Could not start the Daytona report.');
       setDaytonaTask({ task_id: started.task_id, status: 'queued', progress: 'Queued for Daytona.' });
       let attempts = 0;
@@ -346,15 +500,15 @@ function App() {
 
   const toggleListening = () => {
     setAudioError('');
-    if (listening) {
-      setStopConfirmation(false);
+    if (microphoneActiveRef.current) {
       stopConfirmedRef.current = false;
+      setStopConfirmation(false);
       stopMicrophone();
       return;
     }
-    setStopConfirmation(false);
     stopConfirmedRef.current = false;
-    void startMicrophone();
+    setStopConfirmation(false);
+    startMicrophone();
   };
 
   const send = (event) => {
@@ -423,9 +577,9 @@ function App() {
             <section className="panel automation-panel"><div className="panel-head"><div><h2>Front-of-house automation</h2><p>Staff requests Remi can prepare for review.</p></div><Icon name="sparkles" className="quick-spark" size={19}/></div><button className="automation-row task-action" onClick={() => { setActiveNav('Staff assistant'); createScheduleDraft(); }}><span className="automation-icon"><Icon name="clock" size={16}/></span><span><strong>Draft next week’s FOH schedule</strong><small>Prepare coverage for manager review and manual approval.</small></span><b className="task-tag">REVIEW</b></button><div className="automation-row"><span className="automation-icon"><Icon name="activity" size={16}/></span><span><strong>Staff task coordination</strong><small>Capture requests and route them to the right role.</small></span><b className="task-tag ready">PLANNED</b></div><div className="automation-row"><span className="automation-icon"><Icon name="headphones" size={16}/></span><span><strong>Guest service</strong><small>Separate server-to-guest communication workflow.</small></span><b className="task-tag ready">SEPARATE</b></div><div className="integration-note">Schedule drafting and approval are a local demo flow; no schedule is sent to 7shifts.</div></section></div>
           <footer className="page-footer"><span>© 2025 Remi AI</span><span><span className={`footer-live ${service === 'offline' ? 'offline' : ''}`} /> {service === 'online' ? 'Agent API responding' : service === 'offline' ? 'Agent API unreachable' : 'Checking agent API'} <i>·</i> Demo workspace</span></footer>
         </>}
-        {activeNav === 'Staff assistant' && <section className="subpage call-page"><div className="subpage-heading"><span className="section-kicker">STAFF OPERATIONS</span><h1>Staff task assistant</h1><p>Talk through an operational task, review the transcript and inspect what Remi has in context.</p></div><div className="live-call-layout"><section className="panel transcript-panel"><div className="panel-head"><div><h2>Staff conversation</h2><p>Private staff-to-Remi task session.</p></div><span className={`status-chip ${running ? 'active' : ''}`}><i/>{running ? 'Session active' : 'Ready'}</span></div><div className="staff-quick-actions"><button onClick={() => createScheduleDraft()}>Draft next week’s FOH schedule</button><button onClick={() => { setRunning(true); setMessages([{from:'staff',text:'Please check today’s front-of-house coverage.',time:'00:08'},{from:'remi',text:'I can summarize the current roster for staff review. Shift data is available from the mock scheduling connector.',time:'00:15'}]); setScheduleProposal(false); }}>Check today’s coverage</button></div><div className="transcript-scroll">{messages.length ? <>{messages.map((message,index)=><article className={`transcript-turn ${message.from}`} key={`${message.time}-${index}`}><span className="transcript-avatar">{message.from==='remi'?<Icon name="audio" size={14}/>:profile.initials}</span><div className="transcript-content"><div><strong>{message.from==='remi'?'Remi':profile.name}</strong><time>{message.time}</time></div><p>{message.text}</p></div></article>)}{scheduleProposal && <section className="schedule-proposal"><div className="proposal-heading"><div><span className="section-kicker">DRAFT · NEXT WEEK</span><h3>Front-of-house schedule</h3></div><span className={`table-status ${scheduleApproved?'good':'neutral'}`}>{scheduleApproved?'Approved':'Needs manager approval'}</span></div><p className="proposal-summary">Proposed coverage for the service team. Review shift assignments before approving.</p><div className="schedule-rows">{[['Mon','Jordan Lee','11:00–7:00','Floor'],['Tue','Elena Rostova','11:00–7:00','Shift lead'],['Wed','Marcus Vance','4:00–11:30','Bar'],['Thu','Jordan Lee','11:00–7:00','Floor'],['Fri','Elena Rostova','3:00–11:00','Floor'],['Sat','Marcus Vance','4:00–11:30','Bar'],['Sun','Jordan Lee','11:00–6:00','Floor']].map((shift)=> <div className="schedule-row" key={`${shift[0]}-${shift[1]}`}><b>{shift[0]}</b><span>{shift[1]}</span><span>{shift[2]}</span><small>{shift[3]}</small></div>)}</div>{profile.role==='Manager' ? <button className="primary-button approve-schedule" disabled={scheduleApproved} onClick={approveSchedule}><Icon name="check" size={15}/>{scheduleApproved?'Approved by manager':'Approve schedule draft'}</button> : <div className="approval-note"><Icon name="shield" size={15}/> Only a Manager profile can approve this schedule.</div>}<small className="proposal-disclaimer">Demo proposal only. Approval changes the demo status; it does not write to 7shifts.</small></section>}</> : <div className="transcript-empty"><span className="transcript-empty-icon"><Icon name="audio" size={20}/></span><strong>Start a staff task</strong><p>Ask Remi to draft next week’s schedule, review shift coverage or help coordinate a front-of-house task.</p><button className="primary-button" onClick={()=>createScheduleDraft()}><Icon name="play" size={14}/> Try schedule drafting</button></div>}</div><form className="composer transcript-composer" onSubmit={send}><button type="button" className={`mic-button ${listening?'listening':''}`} onClick={toggleListening} aria-label={listening?'Stop microphone now':'Start microphone'} title={listening?'Stop microphone now (manual stop bypasses confirmation)':'Start microphone'}><Icon name="mic" size={17}/></button><input value={input} onChange={(event)=>setInput(event.target.value)} placeholder={stopConfirmation?'Say “confirm stop” or “continue recording”…':voiceProcessing?'Transcribing and preparing spoken reply…':listening?'Listening continuously… speak a staff request':'Microphone stopped · press to resume'}/><span className="demo-hint">{stopConfirmation?'CONFIRM':voiceProcessing?'PROCESSING':listening?'LIVE MIC':voiceSupported?'MIC OFF':'NO MIC'}</span><button className="send-button" type="submit"><Icon name="arrowUp" size={17}/></button></form>{audioError&&<div className="audio-error">{audioError}</div>}</section><aside className="panel agent-context"><div className="panel-head"><div><h2>Agent context</h2><p>Staff, task and approval rules for this session.</p></div><span className="context-live"><i/> ACTIVE</span></div><div className="context-block"><span className="context-label">WORKSPACE</span><strong>Juniper Kitchen</strong><small>Front-of-house operations</small></div><div className="context-block"><span className="context-label">SIGNED-IN STAFF</span><strong>{profile.name} · {profile.role}</strong><small>Profile #{profile.id} · {profile.department}</small></div><div className="context-block"><span className="context-label">CURRENT REQUEST</span><p>{messages.filter((m)=>m.from==='staff').at(-1)?.text || (listening?'Listening for a staff request…':'Waiting for a staff task.')}</p></div><div className="context-block"><span className="context-label">WORKING RULES</span><ul><li>Prepare drafts for staff review before changing operational records.</li><li>Shift schedules require explicit manual approval from a manager.</li><li>Guest-facing server conversations remain a separate workflow.</li></ul></div><div className="context-block tools-block"><span className="context-label">CURRENT MCP CAPABILITIES</span><div className="tool-chips"><span>get_staff_working_now</span><span>get_today_shifts</span><span>get_staff_account_status</span></div><small>Schedule creation is a proposed workflow; no create-schedule MCP tool exists yet.</small></div><button className="outline-button end-call-button" onClick={()=>{stopMicrophone();setRunning(false);setStopConfirmation(false);stopConfirmedRef.current=false;window.remiRecognition?.stop();}}>End staff session</button></aside></div></section>}
+        {activeNav === 'Staff assistant' && <section className="subpage call-page"><div className="subpage-heading"><span className="section-kicker">STAFF OPERATIONS</span><h1>Staff task assistant</h1><p>Talk through an operational task, review the transcript and inspect what Remi has in context.</p></div><div className="live-call-layout"><section className="panel transcript-panel"><div className="panel-head"><div><h2>Staff conversation</h2><p>Private staff-to-Remi task session.</p></div><span className={`status-chip ${running ? 'active' : ''}`}><i/>{running ? 'Session active' : 'Ready'}</span></div><div className="staff-quick-actions"><button onClick={() => createScheduleDraft()}>Draft next week’s FOH schedule</button><button onClick={() => handleStaffRequest('Who is working now?')}>Check today’s coverage</button></div><div className="transcript-scroll" ref={transcriptRef}>{messages.length ? <>{messages.map((message,index)=><article className={`transcript-turn ${message.from}`} key={`${message.time}-${index}`}><span className="transcript-avatar">{message.from==='remi'?<Icon name="audio" size={14}/>:profile.initials}</span><div className="transcript-content"><div><strong>{message.from==='remi'?'Remi':profile.name}</strong><time>{message.time}</time></div><p>{message.text}</p></div></article>)}{scheduleProposal && <section className="schedule-proposal"><div className="proposal-heading"><div><span className="section-kicker">DRAFT · NEXT WEEK</span><h3>Front-of-house schedule</h3></div><span className={`table-status ${scheduleApproved?'good':'neutral'}`}>{scheduleApproved?'Approved':'Needs manager approval'}</span></div><p className="proposal-summary">Proposed coverage for the service team. Review shift assignments before approving.</p><div className="schedule-rows">{[['Mon','Jordan Lee','11:00–7:00','Floor'],['Tue','Elena Rostova','11:00–7:00','Shift lead'],['Wed','Marcus Vance','4:00–11:30','Bar'],['Thu','Jordan Lee','11:00–7:00','Floor'],['Fri','Elena Rostova','3:00–11:00','Floor'],['Sat','Marcus Vance','4:00–11:30','Bar'],['Sun','Jordan Lee','11:00–6:00','Floor']].map((shift)=> <div className="schedule-row" key={`${shift[0]}-${shift[1]}`}><b>{shift[0]}</b><span>{shift[1]}</span><span>{shift[2]}</span><small>{shift[3]}</small></div>)}</div>{profile.role==='Manager' ? <button className="primary-button approve-schedule" disabled={scheduleApproved} onClick={approveSchedule}><Icon name="check" size={15}/>{scheduleApproved?'Approved by manager':'Approve schedule draft'}</button> : <div className="approval-note"><Icon name="shield" size={15}/> Only a Manager profile can approve this schedule.</div>}<small className="proposal-disclaimer">Demo proposal only. Approval changes the demo status; it does not write to 7shifts.</small></section>}</> : <div className="transcript-empty"><span className="transcript-empty-icon"><Icon name="audio" size={20}/></span><strong>Start a staff task</strong><p>Ask Remi to draft next week’s schedule, review shift coverage or help coordinate a front-of-house task.</p><button className="primary-button" onClick={()=>createScheduleDraft()}><Icon name="play" size={14}/> Try schedule drafting</button></div>}</div><form className="composer transcript-composer" onSubmit={send}><button type="button" className={`mic-button ${listening?'listening':''}`} onClick={toggleListening} aria-label={listening?'Stop microphone now':'Start microphone'} title={listening?'Stop microphone now (manual stop bypasses confirmation)':'Start microphone'}><Icon name="mic" size={17}/></button><input value={input} onChange={(event)=>setInput(event.target.value)} placeholder={remiSpeaking?'Say “Remi, stop” to interrupt…':stopConfirmation?'Say “confirm stop” or “continue recording”…':voiceProcessing?'Preparing spoken reply…':listening?'Listening continuously… speak a staff request':'Microphone stopped · press to resume'}/><span className="demo-hint">{remiSpeaking?'SAY REMI TO INTERRUPT':stopConfirmation?'CONFIRM':voiceProcessing?'PROCESSING':listening?'LIVE MIC':voiceSupported?'MIC OFF':'NO MIC'}</span><button className="send-button" type="submit"><Icon name="arrowUp" size={17}/></button></form>{audioError&&<div className="audio-error">{audioError}</div>}</section><aside className="panel agent-context"><div className="panel-head"><div><h2>Agent context</h2><p>Staff, task and approval rules for this session.</p></div><span className="context-live"><i/> ACTIVE</span></div><div className="context-block"><span className="context-label">WORKSPACE</span><strong>Juniper Kitchen</strong><small>Front-of-house operations</small></div><div className="context-block"><span className="context-label">SIGNED-IN STAFF</span><strong>{profile.name} · {profile.role}</strong><small>Profile #{profile.id} · {profile.department}</small></div><div className="context-block"><span className="context-label">CURRENT REQUEST</span><p>{messages.filter((m)=>m.from==='staff').at(-1)?.text || (listening?'Listening for a staff request…':'Waiting for a staff task.')}</p></div><div className="context-block"><span className="context-label">WORKING RULES</span><ul><li>Prepare drafts for staff review before changing operational records.</li><li>Shift schedules require explicit manual approval from a manager.</li><li>Guest-facing server conversations remain a separate workflow.</li></ul></div><div className="context-block tools-block"><span className="context-label">MCP TOOLS FOR THIS PROFILE</span>{capabilities.status === 'loading' ? <small>Checking profile access…</small> : capabilities.status === 'error' ? <small>{capabilities.error}</small> : <><small>Available to the staff assistant</small><div className="tool-chips">{capabilities.tools.map((tool) => <span key={tool}>{tool}</span>)}</div>{capabilities.otherTools.length > 0 && <><small>Available through other MCP workflows</small><div className="tool-chips">{capabilities.otherTools.map((tool) => <span key={tool}>{tool}</span>)}</div></>}<small>Other workflows are not yet connected to the staff assistant.</small></>}</div><button className="outline-button end-call-button" onClick={()=>{stopMicrophone();setRunning(false);setStopConfirmation(false);stopConfirmedRef.current=false;window.remiRecognition?.stop();}}>End staff session</button></aside></div></section>}
                 {activeNav === 'Guest calls' && <section className="subpage"><div className="subpage-heading"><span className="section-kicker">GUEST INTERACTIONS</span><h1>Guest calls</h1><p>Separate server-to-guest interactions and service outcomes.</p></div><div className="panel data-panel"><div className="table-toolbar"><strong>Recent calls</strong><span>Today · 6 calls</span></div><table><thead><tr><th>GUEST</th><th>REASON</th><th>OUTCOME</th><th>DURATION</th><th>TIME</th></tr></thead><tbody>{[['Guest 1042','Takeout order','Order completed','2:14','2m ago'],['Guest 1041','Menu question','Answered','1:08','18m ago'],['Guest 1040','Reservation','Transferred to staff','3:42','41m ago'],['Guest 1039','Takeout order','Order completed','2:56','1h ago'],['Guest 1038','Hours & location','Answered','0:48','2h ago']].map((row) => <tr key={row[0]}>{row.map((item, index) => <td key={item}>{index === 2 ? <span className={`table-status ${item.includes('completed') ? 'good' : item === 'Answered' ? 'neutral' : 'warm'}`}>{item}</span> : item}</td>)}</tr>)}</tbody></table></div></section>}
-        {activeNav === 'Menu & availability' && <section className="subpage"><div className="subpage-heading"><span className="section-kicker">RESTAURANT SETUP</span><h1>Menu & availability</h1><p>See the sample POS menu and current mock availability.</p></div><div className="panel data-panel"><div className="table-toolbar"><strong>Juniper Kitchen menu</strong><span>Mock POS · Last synced just now</span></div><table><thead><tr><th>ICON</th><th>ITEM</th><th>CATEGORY</th><th>PRICE</th><th>AVAILABILITY</th></tr></thead><tbody>{mockMenu.map((item) => <tr key={item.name}><td><img className="menu-category-icon" src={`./menu/${item.icon}`} alt={`${item.category} category icon`} /></td><td className="menu-item-name">{item.name}</td><td>{item.category}</td><td>{item.price}</td><td><span className={`table-status ${item.availability === 'Available' ? 'good' : item.availability === '86’d' ? 'warm' : 'neutral'}`}>{item.availability}</span></td></tr>)}</tbody></table></div><div className="info-banner"><Icon name="help" size={18}/><span>Menu updates are read-only in this demo. Availability is supplied by the deterministic mock POS service.</span></div></section>}
+        {activeNav === 'Menu & availability' && <section className="subpage"><div className="subpage-heading"><span className="section-kicker">RESTAURANT SETUP</span><h1>Menu & availability</h1><p>See the sample POS menu and current mock availability.</p></div><div className="panel data-panel"><div className="table-toolbar"><strong>Juniper Kitchen menu</strong><span>{menuStatus}</span></div><table><thead><tr><th>ICON</th><th>ITEM</th><th>CATEGORY</th><th>PRICE</th><th>AVAILABILITY</th></tr></thead><tbody>{menu.map((item) => <tr key={item.item_id}><td><img className="menu-category-icon" src={`.${item.icon_url}`} alt={`${item.category} category icon`} /></td><td className="menu-item-name">{item.name}</td><td>{item.category}</td><td>${Number(item.price).toFixed(2)}</td><td><span className="table-status neutral">Not checked</span></td></tr>)}</tbody></table></div><div className="info-banner"><Icon name="help" size={18}/><span>Menu updates are read-only in this demo. Menu prices come from the mock POS. Availability is not checked on this page.</span></div></section>}
         {activeNav === 'Insights' && (
           <section className="subpage">
             <div className="subpage-heading"><span className="section-kicker">TASK AUTOMATION</span><h1>Insights</h1><p>Operational workflow measurements for the Remi demonstration.</p></div>
@@ -465,7 +619,7 @@ function App() {
           {settingsSection==='Agent instructions'&&<><h3>Your agent instructions</h3><p>Personal preferences for this signed-in staff profile.</p><label className="field-label">Personal guidance<textarea rows="7" maxLength="2000" value={personalInstructions} onChange={e=>setPersonalInstructions(e.target.value)} placeholder="For example: Keep updates brief and flag staffing gaps before proposing changes."/></label><small className="settings-footnote">Saved in this window for the demo; currently not sent to the agent service.</small></>}
           {settingsSection==='Workplace instructions'&&<><h3>Workplace instructions</h3><p>Shared rules for Remi at Juniper Kitchen. These form workplace-level system guidance.</p><label className="field-label">Workplace operating rules<textarea rows="8" maxLength="4000" value={workplaceInstructions} onChange={e=>setWorkplaceInstructions(e.target.value)}/></label><small className="settings-footnote">Only trusted managers should edit shared instructions. This demo stores the text in memory and does not yet inject it into the backend system prompt.</small></>}
         </div></div><footer className="settings-modal-foot"><span>Settings changes are demo-local unless stated otherwise.</span><button className="outline-button" onClick={()=>setSettingsOpen(false)}>Done</button></footer></section></div>}
-        {activeNav === 'Help center' && <section className="subpage"><div className="subpage-heading"><span className="section-kicker">SUPPORT</span><h1>Help center</h1><p>Quick answers for the Remi demonstration workspace.</p></div><div className="help-grid">{[['Getting started','Choose a staff profile, review the role guide, then open the workspace.'],['Using voice input','Select the microphone and allow access when your system asks. Speech recognition availability depends on the runtime.'],['Order safety','Remi should read the complete order back and receive guest confirmation before submission.'],['Demo limitations','Calls and analytics are sample interactions; live AI and MCP tool execution are not connected yet.']].map(([title,body])=><article className="panel help-card" key={title}><Icon name="help" size={19}/><h2>{title}</h2><p>{body}</p></article>)}</div></section>}
+        {activeNav === 'Help center' && <section className="subpage"><div className="subpage-heading"><span className="section-kicker">SUPPORT</span><h1>Help center</h1><p>Quick answers for the Remi demonstration workspace.</p></div><div className="help-grid">{[['Getting started','Choose a staff profile, review the role guide, then open the workspace.'],['Using voice input','Select the microphone and allow access when your system asks. Microphone audio is transcribed by ElevenLabs after a pause.'],['Order safety','Remi should read the complete order back and receive guest confirmation before submission.'],['Demo limitations','Voice uses ElevenLabs and selected read-only restaurant tools; schedule approval remains a local demo.']].map(([title,body])=><article className="panel help-card" key={title}><Icon name="help" size={19}/><h2>{title}</h2><p>{body}</p></article>)}</div></section>}
       </div></div>
     </main>
   </div>;

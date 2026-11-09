@@ -7,7 +7,7 @@ import json
 import os
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -21,7 +21,7 @@ _TASK_LOCK = threading.Lock()
 def _set_task(task_id: str, **updates: Any) -> None:
     with _TASK_LOCK:
         _TASKS[task_id].update(updates)
-        _TASKS[task_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _TASKS[task_id]["updated_at"] = datetime.now(UTC).isoformat()
 
 
 def get_task(task_id: str) -> dict[str, Any] | None:
@@ -30,9 +30,15 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         return dict(task) if task else None
 
 
+def list_tasks() -> list[dict[str, Any]]:
+    """Return snapshots of tasks owned by this service process, newest first."""
+    with _TASK_LOCK:
+        return [dict(task) for task in reversed(list(_TASKS.values()))]
+
+
 def start_delivery_report_task(mock_base_url: str) -> str:
     task_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with _TASK_LOCK:
         _TASKS[task_id] = {
             "task_id": task_id,
@@ -44,12 +50,14 @@ def start_delivery_report_task(mock_base_url: str) -> str:
             "report": None,
             "error": None,
             "execution": None,
+            "sandbox_id": None,
+            "sandbox_status": "not_created",
         }
     _EXECUTOR.submit(_run_task, task_id, mock_base_url)
     return task_id
 
 
-def _analyze_with_daytona(inventory: dict[str, Any], history: dict[str, Any]) -> str:
+def _analyze_with_daytona(task_id: str, inventory: dict[str, Any], history: dict[str, Any]) -> str:
     api_key = os.getenv("DAYTONA_API_KEY")
     if not api_key:
         raise RuntimeError("Daytona is not configured. Set DAYTONA_API_KEY on the agent service.")
@@ -71,6 +79,7 @@ def _analyze_with_daytona(inventory: dict[str, Any], history: dict[str, Any]) ->
             ephemeral=True,
             network_block_all=True,
         ), timeout=45)
+        _set_task(task_id, sandbox_id=sandbox.id, sandbox_status="running")
         payload_bytes = json.dumps({"inventory": inventory, "history": history}, separators=(",", ":")).encode()
         analyzer = '''
 import json, sys
@@ -106,7 +115,7 @@ print("\\n".join(lines))
         sandbox.fs.upload_file(payload_bytes, "/tmp/remi-marketman-report.json", timeout=20)
         sandbox.fs.upload_file(analyzer.encode(), "/tmp/remi-marketman-report.py", timeout=20)
         result = sandbox.process.exec(
-            f"python3 /tmp/remi-marketman-report.py",
+            "python3 /tmp/remi-marketman-report.py",
             timeout=timeout,
             env={"PYTHONUNBUFFERED": "1"},
         )
@@ -120,8 +129,9 @@ print("\\n".join(lines))
         if sandbox is not None:
             try:
                 client.delete(sandbox, timeout=20, wait=False)
-            except Exception:
-                pass
+                _set_task(task_id, sandbox_status="deletion_requested")
+            except Exception:  # noqa: BLE001 - record cleanup failure from SDK
+                _set_task(task_id, sandbox_status="cleanup_failed")
 
 
 def _run_task(task_id: str, mock_base_url: str) -> None:
@@ -137,7 +147,7 @@ def _run_task(task_id: str, mock_base_url: str) -> None:
             history = history_response.json()
         if inventory.get("status") != "success" or history.get("status") != "success":
             raise RuntimeError("MarketMan mock returned an unexpected response.")
-        report = _EXECUTOR.submit(_analyze_with_daytona, inventory, history).result(timeout=MAX_TASK_SECONDS + 75)
+        report = _analyze_with_daytona(task_id, inventory, history)
         _set_task(task_id, status="completed", progress="Report ready for manager review.", report=report, execution="daytona")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - background failures must reach task status
         _set_task(task_id, status="failed", progress="The delivery report could not be completed.", error=str(exc)[:500])

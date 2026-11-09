@@ -36,7 +36,7 @@ This document records the current visual direction for the Remi desktop MVP. Kee
 - Keep the sidebar fixed and fitted within the window. Let the main content area scroll when a page needs more room.
 - Use denser spacing where it improves scanability, while preserving clear grouping and readable line height.
 - Keep agent transcript and context visible together on the Staff assistant page.
-- Settings use a modal with sections for Display, Connections, Voice agent, Daytona, personal Agent instructions, and shared Workplace instructions.
+- Settings use a modal with sections for Display, Connections, Voice agent, Daytona, personal Agent instructions, shared Workplace instructions, and Staff access.
 - Show service state with a concise status plus explanatory detail. Distinguish live status from demo-only controls.
 - Preserve visible confirmation and review steps before operational changes; schedules require manager approval in the MVP.
 

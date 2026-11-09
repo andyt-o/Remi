@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('node:path');
 
 function createWindow() {
@@ -58,6 +58,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    const isMicrophoneRequest = permission === 'media' && details?.mediaTypes?.includes('audio');
+    callback(Boolean(isMicrophoneRequest));
+  });
   ipcMain.on('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize());
   ipcMain.on('window:toggle-maximize', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);
@@ -91,6 +95,37 @@ app.whenReady().then(() => {
       };
     }
   });
+  ipcMain.handle('agent:turn', async (_event, payload) => {
+    try {
+      const response = await fetch('http://localhost:8000/agent/turn', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload), signal: AbortSignal.timeout(60000),
+      });
+      const result = await response.json();
+      return response.ok ? { ok: true, ...result } : { ok: false, error: result.detail || 'Agent request failed.' };
+    } catch {
+      return { ok: false, error: 'Could not reach the Remi agent service.' };
+    }
+  });
+  ipcMain.handle('agent:menu', async (_event, accountId) => {
+    try {
+      const response = await fetch(`http://localhost:8000/restaurant/menu?account_id=${encodeURIComponent(accountId)}`, { signal: AbortSignal.timeout(10000) });
+      const result = await response.json();
+      return response.ok ? { ok: true, ...result } : { ok: false, error: result.detail || 'Menu unavailable.' };
+    } catch {
+      return { ok: false, error: 'Could not reach the Remi agent service.' };
+    }
+  });
+  ipcMain.handle('agent:capabilities', async (_event, accountId) => {
+    try {
+      const response = await fetch(`http://localhost:8000/agent/capabilities?account_id=${encodeURIComponent(accountId)}`, { signal: AbortSignal.timeout(10000) });
+      const result = await response.json();
+      if (response.status === 404) return { ok: false, error: 'Capability service is unavailable. Restart the Remi agent.' };
+      return response.ok ? { ok: true, ...result } : { ok: false, error: result.detail || 'Capabilities unavailable.' };
+    } catch {
+      return { ok: false, error: 'Could not reach the Remi agent service.' };
+    }
+  });
   ipcMain.handle('voice:session-greeting', async (_event, { role, user }) => {
     try {
       const response = await fetch('http://localhost:8000/voice/greeting', {
@@ -106,12 +141,29 @@ app.whenReady().then(() => {
       return { ok: false };
     }
   });
-  ipcMain.handle('voice:turn', async (_event, { sessionId, role, user, audioBase64, mimeType }) => {
+  ipcMain.handle('voice:transcribe', async (_event, { audioBase64, mimeType }) => {
+    try {
+      const form = new FormData();
+      form.append('audio', new Blob([Buffer.from(audioBase64, 'base64')], { type: mimeType || 'audio/webm' }), 'utterance.webm');
+      const response = await fetch('http://localhost:8000/voice/transcribe', {
+        method: 'POST', body: form, signal: AbortSignal.timeout(60000),
+      });
+      const result = await response.json();
+      return response.ok ? { ok: true, ...result } : { ok: false, error: result.detail || 'Transcription failed.' };
+    } catch (error) {
+      console.error('[voice] Request failed:', error.message, error.cause?.code || '');
+      return { ok: false, error: error instanceof SyntaxError
+        ? 'The Remi voice service returned an invalid response. Check the agent terminal.'
+        : 'Could not reach the Remi voice service. Check that the agent is running on port 8000.' };
+    }
+  });
+  ipcMain.handle('voice:turn', async (_event, { sessionId, role, user, accountId, audioBase64, mimeType }) => {
     try {
       const form = new FormData();
       form.append('session_id', sessionId);
       form.append('role', role);
       form.append('user', user);
+      form.append('account_id', accountId);
       form.append('audio', new Blob([Buffer.from(audioBase64, 'base64')], { type: mimeType || 'audio/webm' }), 'staff-turn.webm');
       const response = await fetch('http://localhost:8000/voice/turn', {
         method: 'POST',
@@ -120,8 +172,11 @@ app.whenReady().then(() => {
       });
       const result = await response.json();
       return response.ok ? { ok: true, ...result } : { ok: false, error: result.detail || 'Voice turn failed.' };
-    } catch {
-      return { ok: false, error: 'Could not reach the Remi voice service.' };
+    } catch (error) {
+      console.error('[voice] Request failed:', error.message, error.cause?.code || '');
+      return { ok: false, error: error instanceof SyntaxError
+        ? 'The Remi voice service returned an invalid response. Check the agent terminal.'
+        : 'Could not reach the Remi voice service. Check that the agent is running on port 8000.' };
     }
   });
   ipcMain.handle('voice:reply', async (_event, payload) => {
@@ -134,8 +189,11 @@ app.whenReady().then(() => {
       });
       const result = await response.json();
       return response.ok ? { ok: true, ...result } : { ok: false, error: result.detail || 'Voice reply failed.' };
-    } catch {
-      return { ok: false, error: 'Could not reach the Remi voice service.' };
+    } catch (error) {
+      console.error('[voice] Request failed:', error.message, error.cause?.code || '');
+      return { ok: false, error: error instanceof SyntaxError
+        ? 'The Remi voice service returned an invalid response. Check the agent terminal.'
+        : 'Could not reach the Remi voice service. Check that the agent is running on port 8000.' };
     }
   });
   ipcMain.handle('voice:speech', async (_event, text) => {
@@ -152,12 +210,12 @@ app.whenReady().then(() => {
       return { ok: false };
     }
   });
-  ipcMain.handle('agent:start-daytona-report', async (_event, role) => {
+  ipcMain.handle('agent:start-daytona-report', async (_event, accountId) => {
     try {
       const response = await fetch('http://localhost:8000/tasks/daytona', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: 'next_delivery_report', role }),
+        body: JSON.stringify({ kind: 'next_delivery_report', account_id: accountId }),
         signal: AbortSignal.timeout(5000),
       });
       const result = await response.json();
